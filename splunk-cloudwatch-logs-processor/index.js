@@ -185,16 +185,58 @@ const CloudWatchToSplunk = (parsed, context, logger, sourcetype, callback) => {
             - Set or remove metadata properties as needed. For descripion of each property, refer to:
             http://docs.splunk.com/Documentation/Splunk/latest/RESTREF/RESTinput#services.2Fcollector */
 
-            const log = {
-                message: item.message,
-                metadata: {
-                    time: item.timestamp ? new Date(item.timestamp).getTime() / 1000 : Date.now(),
-                    host: parsed.logGroup,
-                    source: parsed.logStream,
-                    sourcetype: sourcetype,
-                    //index: 'main',
-                },
-             };
+            let log;
+
+            try {
+                log = JSON.parse(item.message);
+            }
+
+            // Ignore SyntaxError exception if message not in JSON format
+            catch (e) { }
+
+            // Check if message is already in JSON format
+            if (typeof log === "object" && message in log) {
+                // Add metadata fields if not present
+                if (metadata in log) {
+                    if (!time in log.metadata) {
+                        log.metadata.time = item.timestamp ? new Date(item.timestamp).getTime() / 1000 : Date.now();
+                    }
+
+                    if (!host in log.metadata) {
+                        log.metadata.host = parsed.logGroup;
+                    }
+                    if (!source in log.metadata) {
+                        log.metadata.source = parsed.logStream;
+                    }
+
+                    if (!sourcetype in log.metadata) {
+                        log.metadata.sourcetype = sourcetype;
+                    }
+                }
+                // Add whole metadata block if not present
+                else {
+                    log.metadata = {
+                        time: item.timestamp ? new Date(item.timestamp).getTime() / 1000 : Date.now(),
+                        host: parsed.logGroup,
+                        source: parsed.logStream,
+                        sourcetype: sourcetype,
+                    };
+                }
+            }
+
+            // If message wasn't JSON, build the object
+            else {
+                log = {
+                    message: item.message,
+                    metadata: {
+                        time: item.timestamp ? new Date(item.timestamp).getTime() / 1000 : Date.now(),
+                        host: parsed.logGroup,
+                        source: parsed.logStream,
+                        sourcetype: sourcetype,
+                        //index: 'main',
+                    },
+                };
+            }
 
             console.log(log);
             logger.send(log);
