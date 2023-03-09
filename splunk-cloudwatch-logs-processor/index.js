@@ -79,7 +79,7 @@ const getSplunkLogger = (parsed, context, callback) => {
         if (cacheEntry && Date.now() <= cacheEntry.expireDT) {
             if ('logger' in cacheEntry) {
                 console.log("found in cache for", parsed.logGroup);
-                CloudWatchToSplunk(parsed, context, cacheEntry.logger, cacheEntry.sourceType, callback);
+                CloudWatchToSplunk(parsed, context, cacheEntry, callback);
                 return;
             }
 
@@ -100,6 +100,7 @@ const getSplunkLogger = (parsed, context, callback) => {
             path.join(ssmPath, 'hec_endpoint'),
             path.join(ssmPath, 'hec_token'),
             path.join(ssmPath, 'sourcetype'),
+            path.join(ssmPath, 'splunk_json'),
         ],
         WithDecryption: true
     };
@@ -111,6 +112,11 @@ const getSplunkLogger = (parsed, context, callback) => {
             const keyData = {};
 
             console.log('Data retrieved from SSM:', JSON.stringify(ssmData, null, 2));
+
+            // Make splunk_json optional
+            if (InvalidParameters in ssmData && ssmData.InvalidParameters.indexOf('splunk_json') != -1) {
+                ssmData.InvalidParameters.splice(ssmData.InvalidParameters.indexOf('splunk_json'), 1);
+            }
 
             if (ssmData.InvalidParameters.length > 0) {
                 const cacheExpireDT = Date.now() + SPLUNK_CACHE_TTL;
@@ -153,18 +159,21 @@ const getSplunkLogger = (parsed, context, callback) => {
             ssmCache[parsed.logGroup] = {
                 logger: logger,
                 expireDT: cacheExpireDT,
-                sourceType: keyData.sourcetype
+                sourceType: keyData.sourcetype,
+                splunkJSON: keyData.splunk_json ? keyData.splunk_json : false
             };
 
             console.log("wrote to cache for", parsed.logGroup);
-            // FIXME: Maybe we should just pass in whole keyData object to
-            // extract logger and sourcetype inside function.
-            CloudWatchToSplunk(parsed, context, logger, keyData.sourcetype, callback);
+            CloudWatchToSplunk(parsed, context, ssmCache[parsed.logGroup], callback);
         }
     });
 };
 
-const CloudWatchToSplunk = (parsed, context, logger, sourcetype, callback) => {
+const CloudWatchToSplunk = (parsed, context, ssmCache, callback) => {
+    const logger = ssmCache.logger;
+    const sourcetype = ssmCache.sourceType;
+    const splunkjson = ssmCache.splunkJSON;
+
     // First, configure logger to automatically add Lambda metadata and to hook into Lambda callback
     configureLogger(context, logger, callback); // eslint-disable-line no-use-before-define
 
@@ -187,33 +196,25 @@ const CloudWatchToSplunk = (parsed, context, logger, sourcetype, callback) => {
 
             let log;
 
-            try {
-                log = JSON.parse(item.message);
-            } catch (e) {
-                log = { message: item.message };
+            if (splunkjson) {
+                try {
+                    log = JSON.parse(item.message);
+                } catch (e) {}
             }
 
-            // Add metadata fields if not present
-            if (!metadata in log) {
-                log.metadata = {};
-            }
+            if (!log) {
+                log = {
+                    message: item.message,
+                    metadata: {
+                        time: item.timestamp ? new Date(item.timestamp).getTime() / 1000 : Date.now(),
+                        host: parsed.logGroup,
+                        source: parsed.logStream,
+                        sourcetype: sourcetype,
+                        //index: 'main',
+                    },
+                };
 
-            if (!time in log.metadata) {
-                log.metadata.time = item.timestamp ? new Date(item.timestamp).getTime() / 1000 : Date.now();
             }
-
-            if (!host in log.metadata) {
-                log.metadata.host = parsed.logGroup;
-            }
-
-            if (!source in log.metadata) {
-                log.metadata.source = parsed.logStream;
-            }
-
-            if (!sourcetype in log.metadata) {
-                log.metadata.sourcetype = sourcetype;
-            }
-
             console.log(log);
             logger.send(log);
             count += 1;
